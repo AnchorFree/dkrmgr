@@ -293,7 +293,7 @@ func main() {
 
 	if app.config.HealMode {
 		go app.HealContainers(patients)
-		go app.removeCuredPatients(t2)
+		go app.RemoveCuredPatients(t2)
 	}
 
 	app.log.Info("starting http server on port " + app.config.Port)
