@@ -5,9 +5,9 @@ import (
 	"github.com/anchorfree/golang/pkg/jsonlog"
 	dckr "github.com/fsouza/go-dockerclient"
 	"github.com/gorilla/mux"
+	"github.com/jpillora/backoff"
 	"github.com/kelseyhightower/envconfig"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -16,11 +16,15 @@ import (
 // values (processed from environment variables)
 // after we initialize it with envconfig.Process
 type Config struct {
-	DockerSocket   string        `default:"/var/run/docker.sock" split_words:"true"`
-	ScrapeInterval time.Duration `default:"1m" split_words:"true"`
-	InspectTimeout time.Duration `default:"5s" split_words:"true"`
-	DebugMode      bool          `default:"false" split_words:"true"`
-	Port           string        `default:"9102"`
+	DockerSocket      string        `default:"/var/run/docker.sock" split_words:"true"`
+	ScrapeInterval    time.Duration `default:"10s" split_words:"true"`
+	InspectTimeout    time.Duration `default:"5s" split_words:"true"`
+	CleanupInterval   time.Duration `default:"10s" split_words:"true"`
+	RestartBackOffMin time.Duration `default:"10s" split_words:"true"`
+	RestartBackOffMax time.Duration `default:"5m" split_words:"true"`
+	DebugMode         bool          `default:"false" split_words:"true"`
+	HealMode          bool          `default:"false" split_words:"true"`
+	Port              string        `default:"9102"`
 }
 
 // App is the main structure of our app
@@ -30,20 +34,29 @@ type App struct {
 	config        Config
 	log           jsonlog.Logger
 	quit          chan struct{}
-	database      ContainersInfo
+	database      ContainersList
+	patients      PatientsList
 	dockerVersion map[string]string
 }
 
-// ContainersInfo is a map of container names to Container struct.
-type ContainersInfo map[string]Container
-
+// ContainersList is a map of container names to Container struct.
+type ContainersList map[string]Container
 type Container struct {
+	ID           string
 	Image        string
 	State        string
 	Health       string
 	Restarts     int
 	StuckInspect bool
-	Healed       int
+	Healed       map[string]int
+}
+
+type PatientsList map[string]*Patient
+type Patient struct {
+	name               string
+	backoff            *backoff.Backoff
+	lastRestartAttempt time.Time
+	beingTreated       bool
 }
 
 // NewApp initializes the App structure,
@@ -61,7 +74,8 @@ func NewApp() *App {
 
 	log.Init("dkrmgr", app.config.DebugMode, false, nil)
 	app.log = log
-	app.database = ContainersInfo{}
+	app.database = ContainersList{}
+	app.patients = PatientsList{}
 
 	client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
 	if err != nil {
@@ -89,11 +103,11 @@ func NewApp() *App {
 
 }
 
-// GetContainersInfo is supposed to be called periodically from
+// GetContainersList is supposed to be called periodically from
 // a go routine. On each invokation it gets a list of currently
 // present containers via Docker API, parses it and updates
 // information in app.database map.
-func GetContainersInfo(app *App) error {
+func (app *App) GetContainersList(out chan<- Patient) error {
 
 	client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
 	if err != nil {
@@ -116,12 +130,12 @@ func GetContainersInfo(app *App) error {
 
 		name := container.Names[0]
 
-		c := Container{Image: container.Image, State: container.State}
+		c := Container{Image: container.Image, State: container.State, ID: container.ID}
 		existingRecord, ok := app.database[name]
 		if ok {
 			c.Healed = existingRecord.Healed
 		} else {
-			c.Healed = 0
+			c.Healed = map[string]int{"success": 0, "fail": 0}
 		}
 
 		ctx := context.Background()
@@ -137,7 +151,25 @@ func GetContainersInfo(app *App) error {
 			c.StuckInspect = false
 		}
 		app.database[name] = c
-
+		if c.Health == "unhealthy" && app.config.HealMode {
+			_, exists := app.patients[name]
+			p := &Patient{}
+			if !exists {
+				b := backoff.Backoff{
+					Min:    app.config.RestartBackOffMin,
+					Max:    app.config.RestartBackOffMax,
+					Factor: 2,
+					Jitter: false,
+				}
+				app.log.Info(name + " container is sick, scheduled for treatment")
+				p = &Patient{name: name, backoff: &b, beingTreated: false, lastRestartAttempt: time.Now()}
+				app.patients[name] = p
+			} else {
+				p = app.patients[name]
+				app.log.Debug(name + " container is sick, and already been scheduled")
+			}
+			out <- *p
+		}
 	}
 
 	// And remove stale entries
@@ -151,45 +183,87 @@ func GetContainersInfo(app *App) error {
 	return nil
 }
 
-// ShowMetrics parses app.database and outputs metrics for prometheus
-func (app *App) ShowMetrics(w http.ResponseWriter, r *http.Request) {
+func (app *App) HealContainers(in <-chan Patient) {
 
-	output := []string{"# TYPE docker_container_count gauge"}
-	output = append(output, "docker_container_count{docker_container_count=\""+strconv.Itoa(len(app.database))+"\"} "+strconv.Itoa(len(app.database)))
-	output = append(output, "# TYPE docker_container_healthy gauge")
-
-	for name, container := range app.database {
-		healthy := 0
-		if container.Health != "" && container.Health != "healthy" && container.Health != "starting" {
-			healthy = 1
+	for p := range in {
+		container, ok := app.database[p.name]
+		if ok {
+			if p.beingTreated {
+				app.log.Debug(p.name + ": patient is already being treated")
+			} else {
+				app.log.Debug(p.name + ": patient is not being treated, starting treatment")
+				if container.Health == "unhealthy" {
+					p.lastRestartAttempt = time.Now()
+					app.patients[p.name].beingTreated = true
+					go func() {
+						app.log.Debug("sleeping " + p.backoff.Duration().String() + " before restarting " + p.name)
+						time.Sleep(p.backoff.Duration())
+						client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
+						if err != nil {
+							app.log.Error("can't connect to docker daemon to restart "+p.name, err)
+						}
+						err = client.RestartContainer(container.ID, 10)
+						if err != nil {
+							app.log.Error("failed to restart container "+p.name, err)
+							app.database[p.name].Healed["fail"]++
+						} else {
+							app.log.Info("restarted the container " + p.name)
+							app.database[p.name].Healed["success"]++
+						}
+						p.beingTreated = false
+						app.patients[p.name] = &p
+					}()
+				} else {
+					app.log.Debug(p.name + ": patient is in " + container.Health + " state, skipping restart")
+				}
+			}
 		}
-		if container.State != "running" {
-			healthy = 1
+	}
+}
+
+func (app *App) removeCuredPatients(ticker *time.Ticker) {
+
+	for {
+		select {
+		case <-ticker.C:
+			for name, patient := range app.patients {
+				container, ok := app.database[name]
+				if ok {
+					// check if it's time to remove the patient from the list
+					timeElapsed := int(time.Now().Sub(patient.lastRestartAttempt).Seconds())
+
+					if container.Health == "healthy" && timeElapsed > 30 {
+						app.log.Info(name + ": patient is healthy for 30 seconds since last healing, removing from patients list")
+						delete(app.patients, name)
+					}
+
+				} else {
+					app.log.Info(name + ": patient can no longer be seen in containers list, so removing it from patients too")
+					delete(app.patients, name)
+				}
+			}
+		case <-app.quit:
+			ticker.Stop()
+			return
 		}
-		output = append(output, "docker_container_healthy{image_id=\""+container.Image+"\",name=\""+name+"\"} "+strconv.Itoa(healthy))
 	}
 
-	output = append(output, "# TYPE docker_container_restart_count counter")
-	for name, container := range app.database {
-		output = append(output, "docker_container_restart_count{image_id=\""+container.Image+"\",name=\""+name+"\"} "+strconv.Itoa(container.Restarts))
-	}
-	output = append(output, "# TYPE docker_container_status gauge")
-	for name, container := range app.database {
-		output = append(output, "docker_container_status{image_id=\""+container.Image+"\",name=\""+name+"\",docker_container_status=\""+container.State+"\"} 1")
-	}
-	output = append(output, "# TYPE docker_container_stuck_inspect gauge")
-	for name, container := range app.database {
-		stuck := "0"
-		if container.StuckInspect {
-			stuck = "1"
+}
+
+func (app *App) UpdateContainersInfo(ticker *time.Ticker, patients chan<- Patient) {
+
+	for {
+		select {
+		case <-ticker.C:
+			err := app.GetContainersList(patients)
+			if err != nil {
+				app.log.Error("failed to get containers info", err)
+			}
+		case <-app.quit:
+			ticker.Stop()
+			return
 		}
-		output = append(output, "docker_container_stuck_inspect{image_id=\""+container.Image+"\",name=\""+name+"\"} "+stuck)
 	}
-
-	output = append(output, "# TYPE docker_version gauge")
-	output = append(output, "docker_version{docker_version=\""+app.dockerVersion["full"]+"\"} "+app.dockerVersion["stripped"])
-
-	w.Write([]byte(strings.Join(output, "\n")))
 
 }
 
@@ -202,21 +276,15 @@ func main() {
 	app.log.Info("scrape interval:" + app.config.ScrapeInterval.String())
 	app.log.Info("inspect timeout:" + app.config.InspectTimeout.String())
 
-	ticker := time.NewTicker(app.config.ScrapeInterval)
-	go func(app *App) {
-		for {
-			select {
-			case <-ticker.C:
-				err := GetContainersInfo(app)
-				if err != nil {
-					app.log.Error("failed to get containers info", err)
-				}
-			case <-app.quit:
-				ticker.Stop()
-				return
-			}
-		}
-	}(app)
+	t1 := time.NewTicker(app.config.ScrapeInterval)
+	t2 := time.NewTicker(app.config.CleanupInterval)
+	patients := make(chan Patient, 10)
+	go app.UpdateContainersInfo(t1, patients)
+
+	if app.config.HealMode {
+		go app.HealContainers(patients)
+		go app.removeCuredPatients(t2)
+	}
 
 	app.log.Info("starting http server on port " + app.config.Port)
 	rtr := mux.NewRouter()
