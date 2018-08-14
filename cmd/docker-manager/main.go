@@ -51,6 +51,7 @@ type Container struct {
 	Healed       map[string]int
 }
 
+// PatientsList is a map of sick containers names to Patient struct.
 type PatientsList map[string]*Patient
 type Patient struct {
 	name               string
@@ -151,6 +152,9 @@ func (app *App) GetContainersList(out chan<- Patient) error {
 			c.StuckInspect = false
 		}
 		app.database[name] = c
+
+		// If we are in healing mode, we add unhealthy containers
+		// to our patients list
 		if c.Health == "unhealthy" && app.config.HealMode {
 			_, exists := app.patients[name]
 			p := &Patient{}
@@ -183,6 +187,8 @@ func (app *App) GetContainersList(out chan<- Patient) error {
 	return nil
 }
 
+// HealContainers waits for a new patient from the `in`
+// channel, and schedules the restart for each patient.
 func (app *App) HealContainers(in <-chan Patient) {
 
 	for p := range in {
@@ -221,7 +227,11 @@ func (app *App) HealContainers(in <-chan Patient) {
 	}
 }
 
-func (app *App) removeCuredPatients(ticker *time.Ticker) {
+// RemoveCuredPatients is supposed to be run in a go routine.
+// It checks our patients database, and remove stale entries,
+// i.e. containers that are healthy for more than 30 seconds
+// since the last healing + cleans up removed containers.
+func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 
 	for {
 		select {
