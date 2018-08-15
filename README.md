@@ -10,6 +10,9 @@ and container health is `unhealthy`, DKRMGR schedules restart for the container.
 If the container stays `unhealthy` after the restart, DKRMGR schedules another
 restart with a longer delay before the next restart.
 
+DKRMGR is an attempt to combine [docker-exporter](https://github.com/anchorfree/docker-exporter) and
+[docktor](https://github.com/vterdunov/docktor) in one small tool, and make sure it's simple and robust.
+
 Configuration
 -------------
 
@@ -21,7 +24,7 @@ Path to the docker socket. Default is **/var/run/docker.sock**
 * **DKRMGR_SCRAPE_INTERVAL**  
 Interval between calls to docker API to get containers state changes. Default is **10s**
 
-* **DKRMGR_SCRAPE_TIMEOUT**  
+* **DKRMGR_INSPECT_TIMEOUT**  
 Timeout for the container inspect API call. Default is **5s**
 
 * **DKRMGR_CLEANUP_INTERVAL**  
