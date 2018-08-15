@@ -8,6 +8,7 @@ import (
 	"github.com/jpillora/backoff"
 	"github.com/kelseyhightower/envconfig"
 	"net/http"
+	_ "net/http/pprof"
 	"strings"
 	"time"
 )
@@ -37,6 +38,7 @@ type App struct {
 	database      ContainersList
 	patients      PatientsList
 	dockerVersion map[string]string
+	client        *dckr.Client
 }
 
 // ContainersList is a map of container names to Container struct.
@@ -54,7 +56,6 @@ type Container struct {
 // PatientsList is a map of sick containers names to Patient struct.
 type PatientsList map[string]*Patient
 type Patient struct {
-	name               string
 	backoff            *backoff.Backoff
 	lastRestartAttempt time.Time
 	beingTreated       bool
@@ -82,7 +83,7 @@ func NewApp() *App {
 	if err != nil {
 		app.log.Fatal("can't connect to docker daemon", err)
 	}
-
+	app.client = client
 	// It seems unlikely that docker daemon version will change
 	// while our app is running, so we just get docker version
 	// once upon launch.
@@ -107,14 +108,12 @@ func NewApp() *App {
 // GetContainersList is supposed to be called periodically from
 // a go routine. On each invokation it gets a list of currently
 // present containers via Docker API, parses it and updates
-// information in app.database map.
-func (app *App) GetContainersList(out chan<- Patient) error {
+// information in app.database map. If heal mode is on, it also
+// adds unhealthy containers to app.patients map, and sends each
+// patient's name to out channel.
+func (app *App) GetContainersList(out chan<- string) error {
 
-	client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
-	if err != nil {
-		return err
-	}
-	containers, err := client.ListContainers(dckr.ListContainersOptions{All: true})
+	containers, err := app.client.ListContainers(dckr.ListContainersOptions{All: true})
 	if err != nil {
 		return err
 	}
@@ -141,7 +140,7 @@ func (app *App) GetContainersList(out chan<- Patient) error {
 
 		ctx := context.Background()
 		ctx, _ = context.WithTimeout(ctx, app.config.InspectTimeout)
-		InspectInfo, err := client.InspectContainerWithContext(container.ID, ctx)
+		InspectInfo, err := app.client.InspectContainerWithContext(container.ID, ctx)
 
 		if err != nil {
 			app.log.Error("failed to inspect container "+name, err)
@@ -166,13 +165,12 @@ func (app *App) GetContainersList(out chan<- Patient) error {
 					Jitter: false,
 				}
 				app.log.Info(name + " container is sick, scheduled for treatment")
-				p = &Patient{name: name, backoff: &b, beingTreated: false, lastRestartAttempt: time.Now()}
+				p = &Patient{backoff: &b, beingTreated: false, lastRestartAttempt: time.Now()}
 				app.patients[name] = p
 			} else {
-				p = app.patients[name]
 				app.log.Debug(name + " container is sick, and already been scheduled")
 			}
-			out <- *p
+			out <- name
 		}
 	}
 
@@ -187,40 +185,35 @@ func (app *App) GetContainersList(out chan<- Patient) error {
 	return nil
 }
 
-// HealContainers waits for a new patient from the `in`
+// HealContainers waits for a new patient's name from the `in`
 // channel, and schedules the restart for each patient.
-func (app *App) HealContainers(in <-chan Patient) {
+func (app *App) HealContainers(in <-chan string) {
 
-	for p := range in {
-		container, ok := app.database[p.name]
+	for name := range in {
+		container, ok := app.database[name]
 		if ok {
-			if p.beingTreated {
-				app.log.Debug(p.name + ": patient is already being treated")
+			if app.patients[name].beingTreated {
+				app.log.Debug(name + ": patient is already being treated")
 			} else {
-				app.log.Debug(p.name + ": patient is not being treated, starting treatment")
+				app.log.Debug(name + ": patient is not being treated, starting treatment")
 				if container.Health == "unhealthy" {
-					p.lastRestartAttempt = time.Now()
-					app.patients[p.name].beingTreated = true
+					app.patients[name].beingTreated = true
+					app.patients[name].lastRestartAttempt = time.Now()
 					go func() {
-						app.log.Debug("sleeping " + p.backoff.Duration().String() + " before restarting " + p.name)
-						time.Sleep(p.backoff.Duration())
-						client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
+						app.log.Debug("sleeping " + app.patients[name].backoff.Duration().String() + " before restarting " + name)
+						time.Sleep(app.patients[name].backoff.Duration())
+						err := app.client.RestartContainer(container.ID, 10)
 						if err != nil {
-							app.log.Error("can't connect to docker daemon to restart "+p.name, err)
-						}
-						err = client.RestartContainer(container.ID, 10)
-						if err != nil {
-							app.log.Error("failed to restart container "+p.name, err)
-							app.database[p.name].Healed["fail"]++
+							app.log.Error("failed to restart container "+name, err)
+							app.database[name].Healed["fail"]++
 						} else {
-							app.log.Info("restarted the container " + p.name)
-							app.database[p.name].Healed["success"]++
+							app.log.Info("restarted the container " + name)
+							app.database[name].Healed["success"]++
 						}
-						p.beingTreated = false
-						app.patients[p.name] = &p
+						app.patients[name].beingTreated = false
 					}()
 				} else {
-					app.log.Debug(p.name + ": patient is in " + container.Health + " state, skipping restart")
+					app.log.Debug(name + ": patient is in " + container.Health + " state, skipping restart")
 				}
 			}
 		}
@@ -260,7 +253,7 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 
 }
 
-func (app *App) UpdateContainersInfo(ticker *time.Ticker, patients chan<- Patient) {
+func (app *App) UpdateContainersInfo(ticker *time.Ticker, patients chan<- string) {
 
 	for {
 		select {
@@ -288,7 +281,7 @@ func main() {
 
 	t1 := time.NewTicker(app.config.ScrapeInterval)
 	t2 := time.NewTicker(app.config.CleanupInterval)
-	patients := make(chan Patient, 10)
+	patients := make(chan string, 10)
 	go app.UpdateContainersInfo(t1, patients)
 
 	if app.config.HealMode {
