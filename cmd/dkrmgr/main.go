@@ -8,7 +8,6 @@ import (
 	"github.com/jpillora/backoff"
 	"github.com/kelseyhightower/envconfig"
 	"net/http"
-	_ "net/http/pprof"
 	"strings"
 	"time"
 )
