@@ -1,4 +1,4 @@
-DKRMGR -- manager for docker containers
+DKRMGR — manager for docker containers
 =======================================
 
 Description
@@ -6,10 +6,9 @@ Description
 
 DKRMGR is a go daemon to export docker containers metrics for Prometheus.
 DKRMGR also includes healing mode — if a container has a healthcheck defined
-and container health is `unhealthy` DKRMGR schedules restart for the container.
+and container health is `unhealthy`, DKRMGR schedules restart for the container.
 If the container stays `unhealthy` after the restart, DKRMGR schedules another
-restart with a longer delay before the restart.
-
+restart with a longer delay before the next restart.
 
 Configuration
 -------------
@@ -36,7 +35,7 @@ Minimum delay before restarting a container. Default is **5s**
 Maximum delay before restarting a container. Default is **5m**.
 Each consecutive restart (assuming the container stays unhealthy) will
 be scheduled with a delay of (lastDelay*2), so, with default values this
-will be 5s, 10s, 20s et caetera. However, when delay reaches maximum, it
+will be 5s, 10s, 20s et caetera. However, when delay reaches maximum (i.e. 5m), it
 will stay there.
 
 * **DKRMGR_HEAL_MODE**  
