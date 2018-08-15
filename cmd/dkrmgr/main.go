@@ -158,8 +158,8 @@ func (app *App) GetContainersList(out chan<- string) error {
 			p := &Patient{}
 			if !exists {
 				b := backoff.Backoff{
-					Min:    app.config.RestartBackOffMin,
-					Max:    app.config.RestartBackOffMax,
+					Min:    app.config.RestartBackoffMin,
+					Max:    app.config.RestartBackoffMax,
 					Factor: 2,
 					Jitter: false,
 				}
