@@ -21,8 +21,8 @@ type Config struct {
 	ScrapeInterval    time.Duration `default:"10s" split_words:"true"`
 	InspectTimeout    time.Duration `default:"5s" split_words:"true"`
 	CleanupInterval   time.Duration `default:"10s" split_words:"true"`
-	RestartBackOffMin time.Duration `default:"10s" split_words:"true"`
-	RestartBackOffMax time.Duration `default:"5m" split_words:"true"`
+	RestartBackoffMin time.Duration `default:"10s" split_words:"true"`
+	RestartBackoffMax time.Duration `default:"5m" split_words:"true"`
 	DebugMode         bool          `default:"false" split_words:"true"`
 	HealMode          bool          `default:"false" split_words:"true"`
 	Port              string        `default:"9102"`
@@ -105,8 +105,8 @@ func NewApp() *App {
 
 }
 
-// GetContainersList is supposed to be called periodically from
-// a go routine. On each invokation it gets a list of currently
+// GetContainersList updates app.database and app.patients maps.
+// On each invokation it gets a list of currently
 // present containers via Docker API, parses it and updates
 // information in app.database map. If heal mode is on, it also
 // adds unhealthy containers to app.patients map, and sends each
@@ -152,8 +152,8 @@ func (app *App) GetContainersList(out chan<- string) error {
 		}
 		app.database[name] = c
 
-		// If we are in healing mode, we add unhealthy containers
-		// to our patients list
+		// Add unhealthy containers to the patients list and
+		// send their names through out channel if we are in healing mode.
 		if c.Health == "unhealthy" && app.config.HealMode {
 			_, exists := app.patients[name]
 			p := &Patient{}
@@ -232,7 +232,6 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 			for name, patient := range app.patients {
 				container, ok := app.database[name]
 				if ok {
-					// check if it's time to remove the patient from the list
 					timeElapsed := int(time.Now().Sub(patient.lastRestartAttempt).Seconds())
 
 					if container.Health == "healthy" && timeElapsed > 30 {
@@ -253,6 +252,8 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 
 }
 
+// UpdateContainersInfo is just a go-routine ready wrapper for
+// GetContainersList.
 func (app *App) UpdateContainersInfo(ticker *time.Ticker, patients chan<- string) {
 
 	for {
