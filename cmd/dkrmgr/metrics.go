@@ -10,6 +10,8 @@ import (
 func (app *App) ShowMetrics(w http.ResponseWriter, r *http.Request) {
 
 	var output strings.Builder
+	defer app.mutex.RUnlock()
+	app.mutex.Lock()
 	output.Grow(4096) // Let's allocate 4kb right away, most probably we'll use it.
 	output.WriteString("# TYPE docker_container_count gauge\n")
 	output.WriteString("docker_container_count{docker_container_count=\"" + strconv.Itoa(len(app.database)) + "\"} " + strconv.Itoa(len(app.database)) + "\n")

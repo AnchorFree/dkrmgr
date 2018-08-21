@@ -9,6 +9,7 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,7 @@ type App struct {
 	patients      PatientsList
 	dockerVersion map[string]string
 	client        *dckr.Client
+	mutex         sync.RWMutex
 }
 
 // ContainersList is a map of container names to Container struct.
@@ -67,7 +69,7 @@ func NewApp() *App {
 	log := &jsonlog.StdLogger{}
 	log.Init("dkrmgr", false, false, nil)
 
-	app := &App{config: Config{}}
+	app := &App{config: Config{}, mutex: sync.RWMutex{}}
 	err := envconfig.Process("dkrmgr", &app.config)
 	if err != nil {
 		log.Fatal("failed to initialize", err)
@@ -130,12 +132,15 @@ func (app *App) GetContainersList(out chan<- string) error {
 		name := container.Names[0]
 
 		c := Container{Image: container.Image, State: container.State, ID: container.ID}
+
+		app.mutex.RLock()
 		existingRecord, ok := app.database[name]
 		if ok {
 			c.Healed = existingRecord.Healed
 		} else {
 			c.Healed = map[string]int{"success": 0, "fail": 0}
 		}
+		app.mutex.RUnlock()
 
 		ctx := context.Background()
 		ctx, _ = context.WithTimeout(ctx, app.config.InspectTimeout)
@@ -149,6 +154,8 @@ func (app *App) GetContainersList(out chan<- string) error {
 			c.Health = InspectInfo.State.Health.Status
 			c.StuckInspect = false
 		}
+		defer app.mutex.Unlock()
+		app.mutex.Lock()
 		app.database[name] = c
 
 		// Add unhealthy containers to the patients list and
@@ -189,6 +196,7 @@ func (app *App) GetContainersList(out chan<- string) error {
 func (app *App) HealContainers(in <-chan string) {
 
 	for name := range in {
+		app.mutex.Lock()
 		container, ok := app.database[name]
 		if ok {
 			if app.patients[name].beingTreated {
@@ -216,6 +224,7 @@ func (app *App) HealContainers(in <-chan string) {
 				}
 			}
 		}
+		app.mutex.Unlock()
 	}
 }
 
@@ -229,6 +238,7 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 		select {
 		case <-ticker.C:
 			for name, patient := range app.patients {
+				app.mutex.Lock()
 				container, ok := app.database[name]
 				if ok {
 					timeElapsed := int(time.Now().Sub(patient.lastRestartAttempt).Seconds())
@@ -242,6 +252,7 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 					app.log.Info(name + ": patient can no longer be seen in containers list, so removing it from patients too")
 					delete(app.patients, name)
 				}
+				app.mutex.Unlock()
 			}
 		case <-app.quit:
 			ticker.Stop()
