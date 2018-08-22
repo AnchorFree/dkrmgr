@@ -13,21 +13,6 @@ import (
 	"time"
 )
 
-// Config structure will hold all our configuration
-// values (processed from environment variables)
-// after we initialize it with envconfig.Process
-type Config struct {
-	DockerSocket      string        `default:"/var/run/docker.sock" split_words:"true"`
-	ScrapeInterval    time.Duration `default:"10s" split_words:"true"`
-	InspectTimeout    time.Duration `default:"5s" split_words:"true"`
-	CleanupInterval   time.Duration `default:"10s" split_words:"true"`
-	RestartBackoffMin time.Duration `default:"10s" split_words:"true"`
-	RestartBackoffMax time.Duration `default:"5m" split_words:"true"`
-	DebugMode         bool          `default:"false" split_words:"true"`
-	HealMode          bool          `default:"false" split_words:"true"`
-	Port              string        `default:"9102"`
-}
-
 // App is the main structure of our app
 // which holds config values, logger interface
 // and shared data.
@@ -35,31 +20,10 @@ type App struct {
 	config        Config
 	log           jsonlog.Logger
 	quit          chan struct{}
-	database      ContainersList
-	patients      PatientsList
+	containers    Containers
+	patients      Patients
 	dockerVersion map[string]string
 	client        *dckr.Client
-	mutex         sync.RWMutex
-}
-
-// ContainersList is a map of container names to Container struct.
-type ContainersList map[string]Container
-type Container struct {
-	ID           string
-	Image        string
-	State        string
-	Health       string
-	Restarts     int
-	StuckInspect bool
-	Healed       map[string]int
-}
-
-// PatientsList is a map of sick containers names to Patient struct.
-type PatientsList map[string]*Patient
-type Patient struct {
-	backoff            *backoff.Backoff
-	lastRestartAttempt time.Time
-	beingTreated       bool
 }
 
 // NewApp initializes the App structure,
@@ -69,7 +33,7 @@ func NewApp() *App {
 	log := &jsonlog.StdLogger{}
 	log.Init("dkrmgr", false, false, nil)
 
-	app := &App{config: Config{}, mutex: sync.RWMutex{}}
+	app := &App{config: Config{}}
 	err := envconfig.Process("dkrmgr", &app.config)
 	if err != nil {
 		log.Fatal("failed to initialize", err)
@@ -77,8 +41,8 @@ func NewApp() *App {
 
 	log.Init("dkrmgr", app.config.DebugMode, false, nil)
 	app.log = log
-	app.database = ContainersList{}
-	app.patients = PatientsList{}
+	app.containers = Containers{mutex: sync.RWMutex{}, db: map[string]Container{}}
+	app.patients = Patients{mutex: sync.RWMutex{}, db: map[string]*Patient{}}
 
 	client, err := dckr.NewClient("unix:///" + app.config.DockerSocket)
 	if err != nil {
@@ -106,10 +70,10 @@ func NewApp() *App {
 
 }
 
-// GetContainersList updates app.database and app.patients maps.
+// GetContainersList updates app.containers and app.patients maps.
 // On each invokation it gets a list of currently
 // present containers via Docker API, parses it and updates
-// information in app.database map. If heal mode is on, it also
+// information in app.containers map. If heal mode is on, it also
 // adds unhealthy containers to app.patients map, and sends each
 // patient's name to out channel.
 func (app *App) GetContainersList(out chan<- string) error {
@@ -133,14 +97,12 @@ func (app *App) GetContainersList(out chan<- string) error {
 
 		c := Container{Image: container.Image, State: container.State, ID: container.ID}
 
-		app.mutex.RLock()
-		existingRecord, ok := app.database[name]
+		existingRecord, ok := app.containers.Get(name)
 		if ok {
 			c.Healed = existingRecord.Healed
 		} else {
 			c.Healed = map[string]int{"success": 0, "fail": 0}
 		}
-		app.mutex.RUnlock()
 
 		ctx := context.Background()
 		ctx, _ = context.WithTimeout(ctx, app.config.InspectTimeout)
@@ -154,14 +116,12 @@ func (app *App) GetContainersList(out chan<- string) error {
 			c.Health = InspectInfo.State.Health.Status
 			c.StuckInspect = false
 		}
-		defer app.mutex.Unlock()
-		app.mutex.Lock()
-		app.database[name] = c
+		app.containers.Put(name, c)
 
 		// Add unhealthy containers to the patients list and
 		// send their names through out channel if we are in healing mode.
 		if c.Health == "unhealthy" && app.config.HealMode {
-			_, exists := app.patients[name]
+			_, exists := app.patients.Get(name)
 			p := &Patient{}
 			if !exists {
 				b := backoff.Backoff{
@@ -172,7 +132,7 @@ func (app *App) GetContainersList(out chan<- string) error {
 				}
 				app.log.Info(name + " container is sick, scheduled for treatment")
 				p = &Patient{backoff: &b, beingTreated: false, lastRestartAttempt: time.Now()}
-				app.patients[name] = p
+				app.patients.Put(name, p)
 			} else {
 				app.log.Debug(name + " container is sick, and already been scheduled")
 			}
@@ -181,14 +141,16 @@ func (app *App) GetContainersList(out chan<- string) error {
 	}
 
 	// And remove stale entries
-	for n, _ := range app.database {
+	app.containers.mutex.Lock()
+	for n, _ := range app.containers.db {
 		_, exists := existingContainers[n]
 		if !exists {
-			delete(app.database, n)
+			delete(app.containers.db, n)
 		}
 	}
-
+	app.containers.mutex.Unlock()
 	return nil
+
 }
 
 // HealContainers waits for a new patient's name from the `in`
@@ -196,35 +158,37 @@ func (app *App) GetContainersList(out chan<- string) error {
 func (app *App) HealContainers(in <-chan string) {
 
 	for name := range in {
-		app.mutex.Lock()
-		container, ok := app.database[name]
-		if ok {
-			if app.patients[name].beingTreated {
+		container, ok := app.containers.Get(name)
+		patient, cool := app.patients.Get(name)
+		if ok && cool {
+			if patient.beingTreated {
 				app.log.Debug(name + ": patient is already being treated")
 			} else {
 				app.log.Debug(name + ": patient is not being treated, starting treatment")
 				if container.Health == "unhealthy" {
-					app.patients[name].beingTreated = true
-					app.patients[name].lastRestartAttempt = time.Now()
+					app.patients.StartTreatment(name)
 					go func() {
-						app.log.Debug("sleeping " + app.patients[name].backoff.Duration().String() + " before restarting " + name)
-						time.Sleep(app.patients[name].backoff.Duration())
+						defer app.patients.StopTreatment(name)
+						app.log.Debug("sleeping " + patient.backoff.Duration().String() + " before restarting " + name)
+						time.Sleep(patient.backoff.Duration())
 						err := app.client.RestartContainer(container.ID, 10)
 						if err != nil {
 							app.log.Error("failed to restart container "+name, err)
-							app.database[name].Healed["fail"]++
+							app.containers.mutex.Lock()
+							app.containers.db[name].Healed["fail"]++
+							app.containers.mutex.Unlock()
 						} else {
 							app.log.Info("restarted the container " + name)
-							app.database[name].Healed["success"]++
+							app.containers.mutex.Lock()
+							app.containers.db[name].Healed["success"]++
+							app.containers.mutex.Unlock()
 						}
-						app.patients[name].beingTreated = false
 					}()
 				} else {
 					app.log.Debug(name + ": patient is in " + container.Health + " state, skipping restart")
 				}
 			}
 		}
-		app.mutex.Unlock()
 	}
 }
 
@@ -237,23 +201,23 @@ func (app *App) RemoveCuredPatients(ticker *time.Ticker) {
 	for {
 		select {
 		case <-ticker.C:
-			for name, patient := range app.patients {
-				app.mutex.Lock()
-				container, ok := app.database[name]
+			app.patients.mutex.Lock()
+			for name, patient := range app.patients.db {
+				container, ok := app.containers.Get(name)
 				if ok {
 					timeElapsed := int(time.Now().Sub(patient.lastRestartAttempt).Seconds())
 
 					if container.Health == "healthy" && timeElapsed > 30 {
 						app.log.Info(name + ": patient is healthy for 30 seconds since last healing, removing from patients list")
-						delete(app.patients, name)
+						delete(app.patients.db, name)
 					}
 
 				} else {
 					app.log.Info(name + ": patient can no longer be seen in containers list, so removing it from patients too")
-					delete(app.patients, name)
+					delete(app.patients.db, name)
 				}
-				app.mutex.Unlock()
 			}
+			app.patients.mutex.Unlock()
 		case <-app.quit:
 			ticker.Stop()
 			return
