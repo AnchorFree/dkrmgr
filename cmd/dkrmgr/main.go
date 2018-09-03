@@ -100,6 +100,8 @@ func (app *App) GetContainersList(out chan<- string) error {
 		existingRecord, ok := app.containers.Get(name)
 		if ok {
 			c.Healed = existingRecord.Healed
+			c.Restarts = existingRecord.Restarts
+			c.Health = existingRecord.Health
 		} else {
 			c.Healed = map[string]int{"success": 0, "fail": 0}
 		}
