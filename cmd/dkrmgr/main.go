@@ -195,9 +195,10 @@ func (app *App) HealContainers(in <-chan string) {
 								app.log.Error(name+": failed to inspect container after restart, assuming restart failed", err)
 								app.containers.HealFail(name)
 							} else {
-								uptime := time.Now().Sub(InspectInfo.Created).Seconds()
-								if uptime > 20 {
-									app.log.Debug(name + ": uptime is " + strconv.Itoa(int(uptime)))
+								uptime := time.Now().Sub(InspectInfo.Created)
+								app.log.Debug(name + ": created at " + InspectInfo.Created.String())
+								app.log.Debug(name + ": uptime is " + uptime.String())
+								if int(uptime.Seconds()) > 20 {
 									app.log.Info(name + ": uptime is more than 20 seconds, assuming restart failed")
 									app.containers.HealFail(name)
 								} else {
