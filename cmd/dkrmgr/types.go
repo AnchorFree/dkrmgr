@@ -48,6 +48,18 @@ func (c *Containers) Put(name string, container Container) {
 	c.db[name] = container
 }
 
+func (c *Containers) HealSuccess(name string) {
+	defer c.mutex.Unlock()
+	c.mutex.Lock()
+	c.db[name].Healed["success"]++
+}
+
+func (c *Containers) HealFail(name string) {
+	defer c.mutex.Unlock()
+	c.mutex.Lock()
+	c.db[name].Healed["fail"]++
+}
+
 type Patient struct {
 	backoff            *backoff.Backoff
 	lastRestartAttempt time.Time
