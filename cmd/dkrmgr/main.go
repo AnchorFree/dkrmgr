@@ -176,14 +176,33 @@ func (app *App) HealContainers(in <-chan string) {
 						err := app.client.RestartContainer(container.ID, 10)
 						if err != nil {
 							app.log.Error("failed to restart container "+name, err)
-							app.containers.mutex.Lock()
-							app.containers.db[name].Healed["fail"]++
-							app.containers.mutex.Unlock()
+							app.containers.HealFail(name)
 						} else {
-							app.log.Info("restarted the container " + name)
-							app.containers.mutex.Lock()
-							app.containers.db[name].Healed["success"]++
-							app.containers.mutex.Unlock()
+
+							// Sometimes when you restart a container, although
+							// docker API returns the success code, the container
+							// is actually not restarted. So we have to introduce
+							// some hack to mark this case as failed restart.
+
+							// let's wait a couple of seconds first
+							time.Sleep(3 * time.Second)
+							// and inspect the restarted container
+							ctx := context.Background()
+							ctx, _ = context.WithTimeout(ctx, app.config.InspectTimeout)
+							InspectInfo, err := app.client.InspectContainerWithContext(container.ID, ctx)
+							if err != nil {
+								app.log.Error(name+": failed to inspect container after restart, assuming restart failed", err)
+								app.containers.HealFail(name)
+							} else {
+								uptime := time.Now().Sub(InspectInfo.Created).Seconds()
+								if uptime > 20 {
+									app.log.Info(name + ": uptime is more than 20 seconds, assuming restart failed")
+									app.containers.HealFail(name)
+								} else {
+									app.log.Info("restarted the container " + name)
+									app.containers.HealSuccess(name)
+								}
+							}
 						}
 					}()
 				} else {
