@@ -50,6 +50,6 @@ func (app *App) ShowMetrics(w http.ResponseWriter, r *http.Request) {
 
 	output.WriteString("# TYPE docker_version gauge\n")
 	output.WriteString("docker_version{docker_version=\"" + app.dockerVersion["full"] + "\"} " + app.dockerVersion["stripped"] + "\n")
-	w.Write([]byte(output.String()))
+	_, _ = w.Write([]byte(output.String()))
 
 }
