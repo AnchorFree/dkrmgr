@@ -1,6 +1,6 @@
 name: Run Gosec
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
   tests:
@@ -17,6 +17,7 @@ jobs:
           args: ./...
 
       - uses: actions/github-script@0.9.0
+        if: github.event_name == 'pull_request'
         env:
           GOSEC: "gosec\n${{ steps.gosec.outputs.stdout }}"
         with:
