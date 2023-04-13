@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "master" ]
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
@@ -28,14 +28,14 @@ jobs:
         run: git lfs checkout
 
       - name: Run Trivy vulnerability scanner in repo mode (table)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.9.2
         with:
           scan-type: 'fs'
           ignore-unfixed: true
           format: 'table'
 
       - name: Run Trivy vulnerability scanner in repo mode (sarif)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.9.2
         with:
           scan-type: 'fs'
           ignore-unfixed: true
@@ -68,14 +68,14 @@ jobs:
         run: |
           docker build -t ${{ github.sha }} .
       - name: Run Trivy vulnerability scanner in image mode (table output)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.9.2
         with:
           image-ref: '${{ github.sha }}'
           ignore-unfixed: true
           format: 'table'
 
       - name: Run Trivy vulnerability scanner in image mode (sarif output)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.9.2
         with:
           image-ref: '${{ github.sha }}'
           ignore-unfixed: true
