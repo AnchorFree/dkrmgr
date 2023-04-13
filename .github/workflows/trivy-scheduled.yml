@@ -23,7 +23,7 @@ jobs:
         run: git lfs checkout
 
       - name: Run Trivy vulnerability scanner in repo mode (sarif)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.9.2
         with:
           scan-type: 'fs'
           ignore-unfixed: true
