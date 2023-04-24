@@ -7,6 +7,7 @@ COPY . /cmd
 RUN cd /cmd && go build
 
 FROM alpine:3.17
+WORKDIR /tmp/
 LABEL maintainer="v.zorin@anchorfree.com"
 
 COPY --from=builder /cmd/dkrmgr /usr/local/bin/dkrmgr
