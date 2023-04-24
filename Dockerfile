@@ -1,4 +1,5 @@
 FROM golang:1.19-alpine3.17 as builder
+WORKDIR /tmp/
 LABEL maintainer="v.zorin@anchorfree.com"
 
 RUN apk add --no-cache git libc-dev gcc 
