@@ -1,3 +1,4 @@
+# Workflow managed by https://github.com/AnchorFree/workflows/
 name: Hadolint Linter
 on: [pull_request]
 jobs:
