@@ -1,4 +1,5 @@
 FROM golang:1.19-alpine3.17 as builder
+# hadolint ignore=DL3003,SC1035
 WORKDIR /cmd
 LABEL maintainer="v.zorin@anchorfree.com"
 
@@ -7,6 +8,7 @@ COPY . /cmd
 RUN cd /cmd && go build
 
 FROM alpine:3.17
+# hadolint ignore=DL3003,SC1035
 WORKDIR /cmd
 LABEL maintainer="v.zorin@anchorfree.com"
 
