@@ -7,7 +7,7 @@ Description
 DKRMGR is a go daemon to export docker containers metrics for Prometheus.
 DKRMGR also includes healing mode — if a container has a healthcheck defined
 and container health is `unhealthy`, DKRMGR schedules restart for the container.
-If the container stays `unhealthy` after the restart, DKRMGR schedules another
+If the container stay `unhealthy` after the restart, DKRMGR schedules another
 restart with a longer delay before the next restart.
 
 DKRMGR is an attempt to combine [docker-exporter](https://github.com/anchorfree/docker-exporter) and
