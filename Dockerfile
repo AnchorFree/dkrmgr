@@ -5,7 +5,7 @@ LABEL maintainer="v.zorin@anchorfree.com"
 
 RUN apk update && apk add --no-cache git libc-dev gcc
 COPY . /cmd 
-RUN cd /cmd && go build
+RUN go build
 
 FROM alpine:3.18.4
 # hadolint ignore=DL3003,SC1035

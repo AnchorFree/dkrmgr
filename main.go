@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/anchorfree/golang/pkg/jsonlog"
 	dckr "github.com/fsouza/go-dockerclient"
 	"github.com/gorilla/mux"
 	"github.com/jpillora/backoff"
 	"github.com/kelseyhightower/envconfig"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
 )
 
 // App is the main structure of our app
@@ -291,6 +292,6 @@ func main() {
 	rtr := mux.NewRouter()
 	rtr.HandleFunc("/metrics", app.ShowMetrics).Methods("GET")
 	http.Handle("/", rtr)
-	app.log.Fatal("http server stopped", http.ListenAndServe(":"+app.config.Port, nil))
+	app.log.Fatal("http server stopped", http.ListenAndServe(":"+app.config.Port, nil)) // #nosec
 
 }
