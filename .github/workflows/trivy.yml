@@ -7,7 +7,7 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
   schedule:
-    # 00:00 every 14 days 
+    # 00:00 every 14 days
     - cron: 0 0 */14 * *
 
 permissions:
@@ -76,14 +76,14 @@ jobs:
           docker build -t ${{ github.sha }} .
 
       - name: Run Trivy vulnerability scanner in image mode (table output)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: '${{ github.sha }}'
           ignore-unfixed: true
           format: 'table'
 
       - name: Run Trivy vulnerability scanner in image mode (sarif output)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: '${{ github.sha }}'
           ignore-unfixed: true
