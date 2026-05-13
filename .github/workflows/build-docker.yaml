@@ -38,7 +38,7 @@ jobs:
             secret/devops/cloud_providers/gcp/aura-networking/gar/gh-actions-rw auth | GAR_TOKEN
 
       - name: Login to registry - GAR
-        uses: docker/login-action@465a07811f14bebb1938fbed4728c6a1ff8901fc # v2.2.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: us-docker.pkg.dev
           username: _json_key
