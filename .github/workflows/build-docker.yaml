@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Import Secrets
-        uses: hashicorp/vault-action@65d7a12a8098b0aa7fcfdf22ad850c051f8b3ccb # v2.7.2
+        uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b # v3.4.0
         id: secrets
         with:
           url: https://vault.afdevops.com
